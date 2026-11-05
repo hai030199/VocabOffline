@@ -41,13 +41,15 @@ enum KeychainStore {
 
 /// Cấu hình AI không bí mật + thống kê đã dùng, lưu ở UserDefaults.
 enum AISettings {
-    static let defaultModel = "gemini-3.5-flash"
+    static let defaultModel = "gemini-3.8-flash"
     private static let modelKey = "ai_gemini_model"
+    /// Model Google đã ngừng (đang tự chuyển hướng); gặp thì dùng model mặc định mới
+    private static let retiredModels: Set<String> = ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
     static var model: String {
         get {
             let m = UserDefaults.standard.string(forKey: modelKey)?.trimmingCharacters(in: .whitespaces) ?? ""
-            return m.isEmpty ? defaultModel : m
+            return (m.isEmpty || retiredModels.contains(m)) ? defaultModel : m
         }
         set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespaces), forKey: modelKey) }
     }

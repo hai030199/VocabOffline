@@ -95,13 +95,13 @@ struct GeminiVocabExtractor: VocabExtractor {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
 
+        // Từ Gemini 3.6 trở đi temperature/top_p/top_k bị bỏ (sắp báo lỗi 400), nên không gửi nữa
         var generationConfig: [String: Any] = [
-            "temperature": 0.2,
             "responseMimeType": "application/json",
             "responseSchema": Self.responseSchema
         ]
-        // Việc đơn giản, để suy nghĩ ở mức thấp cho nhanh và ít token
-        if lowThinking { generationConfig["thinkingConfig"] = ["thinkingLevel": "LOW"] }
+        // Việc đơn giản, để suy nghĩ ở mức thấp cho nhanh và ít token (3.8 Flash hỗ trợ low/medium/high)
+        if lowThinking { generationConfig["thinkingConfig"] = ["thinkingLevel": "low"] }
 
         let body: [String: Any] = [
             "contents": [[
