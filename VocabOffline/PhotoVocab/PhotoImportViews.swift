@@ -345,6 +345,9 @@ struct PhotoVocabSheet: View {
             return
         }
         let extractor: VocabExtractor = GeminiVocabExtractor(apiKey: key, model: AISettings.model)
+        // Xin iOS cho chạy tiếp vài chục giây nếu người dùng tắt màn hình hoặc chuyển app khi đang quét
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "GeminiScan")
+        defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
         do {
             let r = try await extractor.extract(from: marked)
             AIUsageStats.record(input: r.inputTokens, output: r.outputTokens)
@@ -359,7 +362,7 @@ struct PhotoVocabSheet: View {
             errorText = e.localizedDescription
             phase = .error
         } catch {
-            errorText = "Lỗi kết nối: \(error.localizedDescription)"
+            errorText = GeminiVocabExtractor.describe(error)
             phase = .error
         }
     }

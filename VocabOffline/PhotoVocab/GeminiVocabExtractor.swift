@@ -76,21 +76,80 @@ struct GeminiVocabExtractor: VocabExtractor {
     5. No duplicates. Keep the order they appear on the page.
     """
 
+    /// Model dự phòng khi model chính quá tải, hết lượt hoặc mất kết nối liên tục
+    static let fallbackModel = "gemini-3.5-flash-lite"
+
+    /// Session riêng: chờ lâu hơn, chờ có mạng lại, không dùng lại kết nối cũ đã chết (nguyên nhân hay gặp của lỗi -1005)
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 120
+        c.timeoutIntervalForResource = 180
+        c.waitsForConnectivity = true
+        return URLSession(configuration: c)
+    }()
+
     func extract(from image: UIImage) async throws -> ExtractionResult {
-        guard let jpeg = image.resizedForUpload(maxSide: 1600).jpegData(compressionQuality: 0.8) else {
+        // 1600px, chất lượng 0.7: chữ vẫn đọc rõ, ảnh nhẹ hơn để upload nhanh
+        guard let jpeg = image.resizedForUpload(maxSide: 1600).jpegData(compressionQuality: 0.7) else {
             throw ExtractorError.badResponse("không nén được ảnh")
         }
         do {
-            return try await send(jpeg: jpeg, lowThinking: true)
-        } catch ExtractorError.badRequest(let msg) where msg.lowercased().contains("think") {
-            // Model không hỗ trợ thinkingLevel thì gửi lại không kèm cấu hình này
-            return try await send(jpeg: jpeg, lowThinking: false)
+            return try await sendWithRetry(jpeg: jpeg, model: model)
+        } catch let e where model != Self.fallbackModel && Self.shouldFallback(e) {
+            // Model chính lỗi mạng, quá tải hoặc hết lượt thì thử 1 lần với Flash-Lite
+            return try await sendWithRetry(jpeg: jpeg, model: Self.fallbackModel)
         }
     }
 
-    private func send(jpeg: Data, lowThinking: Bool) async throws -> ExtractionResult {
+    /// Gửi, nếu rớt mạng giữa chừng thì tự gửi lại tối đa 2 lần
+    private func sendWithRetry(jpeg: Data, model: String) async throws -> ExtractionResult {
+        var attempt = 0
+        while true {
+            do {
+                do {
+                    return try await send(jpeg: jpeg, model: model, lowThinking: true)
+                } catch ExtractorError.badRequest(let msg) where msg.lowercased().contains("think") {
+                    // Model không hỗ trợ thinkingLevel thì gửi lại không kèm cấu hình này
+                    return try await send(jpeg: jpeg, model: model, lowThinking: false)
+                }
+            } catch let e as URLError where Self.retryableCodes.contains(e.code) && attempt < 2 {
+                attempt += 1
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 1_500_000_000)
+            }
+        }
+    }
+
+    static let retryableCodes: Set<URLError.Code> = [
+        .networkConnectionLost, .timedOut, .cannotConnectToHost, .dnsLookupFailed, .secureConnectionFailed
+    ]
+
+    static func shouldFallback(_ error: Error) -> Bool {
+        if let u = error as? URLError { return retryableCodes.contains(u.code) }
+        if let e = error as? ExtractorError {
+            switch e {
+            case .rateLimited, .server, .modelNotFound: return true
+            default: return false
+            }
+        }
+        return false
+    }
+
+    /// Đổi lỗi mạng của iOS sang câu dễ hiểu
+    static func describe(_ error: Error) -> String {
+        guard let u = error as? URLError else { return "Lỗi kết nối: \(error.localizedDescription)" }
+        switch u.code {
+        case .notConnectedToInternet:
+            return "Máy đang không có mạng. Bật wifi hoặc 4G rồi thử lại."
+        case .networkConnectionLost, .timedOut:
+            return "Kết nối tới Gemini bị ngắt giữa chừng (đã thử lại 3 lần và thử cả \(fallbackModel)). Kiểm tra mạng, tắt VPN nếu có, giữ màn hình mở khi đang quét rồi thử lại. (mã \(u.code.rawValue))"
+        default:
+            return "Lỗi kết nối: \(u.localizedDescription) (mã \(u.code.rawValue))"
+        }
+    }
+
+    private func send(jpeg: Data, model: String, lowThinking: Bool) async throws -> ExtractionResult {
         let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent")!
-        var req = URLRequest(url: url, timeoutInterval: 60)
+        var req = URLRequest(url: url, timeoutInterval: 120)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
@@ -115,7 +174,7 @@ struct GeminiVocabExtractor: VocabExtractor {
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await Self.session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw Self.mapError(status: status, data: data, model: model) }
 
